@@ -47,7 +47,7 @@ export const ChatInterface: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-white">🤖 LLM Chatbot</h1>
           <p className="text-sm text-gray-200">
-            Powered by Llama 3.1 • RAG Enabled • Tool Integration
+            Powered by TinyLlama • RAG Enabled • Tool Integration
           </p>
         </div>
         <DocumentUpload onUploadComplete={handleUploadComplete} />

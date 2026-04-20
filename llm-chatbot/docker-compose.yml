@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ============================================
   # PostgreSQL Database
@@ -37,6 +35,12 @@ services:
       - OLLAMA_HOST=0.0.0.0:11434
     networks:
       - chatbot_network
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/null >/dev/tcp/localhost/11434' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     # Pull models on startup (optional, can be done manually)
     # entrypoint: /bin/sh -c "ollama serve & sleep 10 && ollama pull llama2 && ollama pull bge-small-en-v1.5 && wait"
 
@@ -57,14 +61,17 @@ services:
       - ORCHESTRATION_URL=http://llm-orchestration:8001
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
-    volumes:
-      # - ./backend:/app  # Commented out for Docker Desktop Mac compatibility
-      - /app/__pycache__
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/docs').status\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
     networks:
       - chatbot_network
 
@@ -87,12 +94,18 @@ services:
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
     volumes:
-      # - ./llm-orchestration:/app  # Commented out for Docker Desktop Mac compatibility
       - faiss_data:/data
-      - /app/__pycache__
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs').status\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
-      - ollama
-      - mcp-server
+      ollama:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
     networks:
       - chatbot_network
 
@@ -112,9 +125,12 @@ services:
       - PORT=8002
       - LOG_LEVEL=INFO
       - TODO_API_BASE_URL=http://todoapp-api:8080
-    volumes:
-      # - ./mcp-server:/app  # Commented out for Docker Desktop Mac compatibility
-      - /app/__pycache__
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health').status\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - chatbot_network
 
@@ -126,18 +142,20 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: chatbot_frontend
-    command: npm run dev
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api
       - NEXT_PUBLIC_ORCHESTRATION_URL=http://localhost:8001/api
-    volumes:
-      # - ./frontend:/app  # Commented out for Docker Desktop Mac compatibility
-      - /app/node_modules
-      - /app/.next
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000').status\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - chatbot_network
 
