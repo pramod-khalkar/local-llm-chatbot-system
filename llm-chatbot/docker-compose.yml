@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: chatbot_postgres
+    environment:
+      POSTGRES_USER: chatbot_user
+      POSTGRES_PASSWORD: chatbot_password
+      POSTGRES_DB: chatbot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot_user -d chatbot_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chatbot_network
+
+  # ============================================
+  # Ollama (LLM & Embeddings)
+  # ============================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chatbot_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    networks:
+      - chatbot_network
+    # Pull models on startup (optional, can be done manually)
+    # entrypoint: /bin/sh -c "ollama serve & sleep 10 && ollama pull llama2 && ollama pull bge-small-en-v1.5 && wait"
+
+  # ============================================
+  # Backend API Service (FastAPI)
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot_backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://chatbot_user:chatbot_password@postgres:5432/chatbot_db
+      - OLLAMA_HOST=http://ollama:11434
+      - ORCHESTRATION_URL=http://llm-orchestration:8001
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    volumes:
+      # - ./backend:/app  # Commented out for Docker Desktop Mac compatibility
+      - /app/__pycache__
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - chatbot_network
+
+  # ============================================
+  # LLM Orchestration Service
+  # ============================================
+  llm-orchestration:
+    build:
+      context: ./llm-orchestration
+      dockerfile: Dockerfile
+    container_name: chatbot_llm_orchestration
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    ports:
+      - "8001:8001"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - FAISS_INDEX_PATH=/data/faiss_index
+      - MCP_SERVER_HOST=mcp-server
+      - MCP_SERVER_PORT=8002
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    volumes:
+      # - ./llm-orchestration:/app  # Commented out for Docker Desktop Mac compatibility
+      - faiss_data:/data
+      - /app/__pycache__
+    depends_on:
+      - ollama
+      - mcp-server
+    networks:
+      - chatbot_network
+
+  # ============================================
+  # MCP Server (Tool Integration)
+  # ============================================
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: chatbot_mcp_server
+    command: python app.py
+    ports:
+      - "8002:8002"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8002
+      - LOG_LEVEL=INFO
+      - TODO_API_BASE_URL=http://todoapp-api:8080
+    volumes:
+      # - ./mcp-server:/app  # Commented out for Docker Desktop Mac compatibility
+      - /app/__pycache__
+    networks:
+      - chatbot_network
+
+  # ============================================
+  # Frontend (Next.js)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbot_frontend
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      - NEXT_PUBLIC_ORCHESTRATION_URL=http://localhost:8001/api
+    volumes:
+      # - ./frontend:/app  # Commented out for Docker Desktop Mac compatibility
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - chatbot_network
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  chatbot_network:
+    name: chatbot_network
+    driver: bridge
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres_data:
+  ollama_data:
+  faiss_data:
