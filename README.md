@@ -3,4 +3,4 @@ A minimal end-to-end system that hosts a local LLM, leverages RAG for knowledge 
 
 # Architecture design
 
-![img.png](img.png)
+![img.png](architecture.png)
