@@ -4,3 +4,15 @@ A minimal end-to-end system that hosts a local LLM, leverages RAG for knowledge 
 # Architecture design
 
 ![img.png](architecture.png)
+
+# Quick start the all container's
+```
+todoer> docker compose up --build
+
+llm-chatbot> docker compose up --build
+
+```
+
+# More details
+- [todoer readme](./todoer/README.md)
+- [llm-chatbot readme](./llm-chatbot/README.md)
