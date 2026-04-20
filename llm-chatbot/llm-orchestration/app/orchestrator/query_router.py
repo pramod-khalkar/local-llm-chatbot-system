@@ -11,6 +11,7 @@ class QueryDecision(BaseModel):
     query_type: str  # "chat", "rag", "tool"
     confidence: float  # 0-1
     tool_name: Optional[str] = None
+    tool_action: Optional[str] = None  # e.g., "create", "list", "complete" for todos
     rag_required: bool = False
     rationale: str
 
@@ -31,6 +32,15 @@ class QueryRouter:
             "document", "file", "reference", "according to", "based on",
             "search my documents", "look up", "find in my files", "retrieve"
         ]
+        
+        # Action keywords for todos
+        self.todo_actions = {
+            "create": ["add", "create", "new", "make", "create a todo", "add a task"],
+            "list": ["list", "show", "get", "all todos", "all tasks", "what do i have"],
+            "complete": ["complete", "done", "finish", "mark done", "close", "complete task"],
+            "update": ["update", "change", "modify", "edit"],
+            "delete": ["delete", "remove", "clear"]
+        }
     
     async def route_query(self, query: str, context: Optional[str] = None) -> QueryDecision:
         """Route query to appropriate handler."""
@@ -83,15 +93,30 @@ class QueryRouter:
             for keyword in keywords:
                 if keyword in query:
                     confidence = len([k for k in keywords if k in query]) / len(keywords)
+                    
+                    # Detect action for todos
+                    tool_action = None
+                    if tool == "todo":
+                        tool_action = self._detect_todo_action(query)
+                    
                     return QueryDecision(
                         query_type="tool",
                         confidence=min(0.9, 0.6 + confidence * 0.3),
                         tool_name=tool,
+                        tool_action=tool_action,
                         rag_required=False,
-                        rationale=f"Query contains tool keywords for {tool}"
+                        rationale=f"Query contains tool keywords for {tool}" + (f", action: {tool_action}" if tool_action else "")
                     )
         
         return None
+    
+    def _detect_todo_action(self, query: str) -> Optional[str]:
+        """Detect the action for a todo query (create, list, complete, etc.)."""
+        for action, keywords in self.todo_actions.items():
+            for keyword in keywords:
+                if keyword in query:
+                    return action
+        return "list"  # Default to list if no specific action detected
     
     def _should_use_rag(self, query: str) -> bool:
         """Check if query requires RAG."""
