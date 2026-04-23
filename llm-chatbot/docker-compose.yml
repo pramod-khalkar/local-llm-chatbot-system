@@ -55,12 +55,13 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql://chatbot_user:chatbot_password@postgres:5432/chatbot_db
       - OLLAMA_HOST=http://ollama:11434
       - ORCHESTRATION_URL=http://llm-orchestration:8001
       - LOG_LEVEL=INFO
-      - ENVIRONMENT=development
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/docs').status\" || exit 1"]
       interval: 10s
@@ -86,13 +87,14 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
     ports:
       - "8001:8001"
+    env_file:
+      - .env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - FAISS_INDEX_PATH=/data/faiss_index
       - MCP_SERVER_HOST=mcp-server
       - MCP_SERVER_PORT=8002
       - LOG_LEVEL=INFO
-      - ENVIRONMENT=development
     volumes:
       - faiss_data:/data
     healthcheck:
@@ -120,6 +122,8 @@ services:
     command: python app.py
     ports:
       - "8002:8002"
+    env_file:
+      - .env
     environment:
       - HOST=0.0.0.0
       - PORT=8002
@@ -144,9 +148,8 @@ services:
     container_name: chatbot_frontend
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
-      - NEXT_PUBLIC_ORCHESTRATION_URL=http://localhost:8001/api
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000').status\" || exit 1"]
       interval: 10s
