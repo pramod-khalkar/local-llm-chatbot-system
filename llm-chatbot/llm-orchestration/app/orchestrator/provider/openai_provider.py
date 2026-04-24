@@ -1,3 +1,4 @@
+import os
 from typing import Optional, List, Dict, Any
 from .base import LLMProvider
 import logging
@@ -10,10 +11,10 @@ class OpenAIProvider(LLMProvider):
     
     def __init__(
         self,
-        model_name: str = "gpt-3.5-turbo",
+        model_name: str = os.getenv("OPENAI_MODEL", "gpt-4o"),
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        api_key: str = None
+        api_key: str = os.getenv("OPENAI_API_KEY")
     ):
         super().__init__(model_name, temperature, max_tokens)
         self.api_key = api_key

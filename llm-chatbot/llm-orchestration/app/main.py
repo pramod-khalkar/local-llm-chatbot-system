@@ -31,9 +31,8 @@ async def lifespan(app: FastAPI):
     
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     llm_provider = OllamaProvider(
-        model_name="tinyllama",
         host=ollama_host,
-        embedding_model="nomic-embed-text"
+        embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
     )
     
     query_router = QueryRouter()
@@ -152,7 +151,7 @@ Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
                             
                             tool_result = await asyncio.wait_for(
                                 mcp_handler.create_todo(title, description),
-                                timeout=15.0
+                                timeout=600.0
                             )
                             logger.info(f"Step 4d: create_todo completed with status={tool_result.get('status')}")
                             tool_calls = ["create_todo"]
@@ -171,7 +170,7 @@ Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
                             title = query.query[:50]  # Use first 50 chars as title
                             tool_result = await asyncio.wait_for(
                                 mcp_handler.create_todo(title, ""),
-                                timeout=15.0
+                                timeout=600.0
                             )
                             tool_calls = ["create_todo"]
                             if tool_result.get("status") == "success":
@@ -200,7 +199,7 @@ Example: {{"todo_id": "1", "todo_title": ""}}"""
                                 logger.info(f"Step 4c: Completing todo ID: {todo_id}")
                                 tool_result = await asyncio.wait_for(
                                     mcp_handler.complete_todo(todo_id),
-                                    timeout=15.0
+                                    timeout=600.0
                                 )
                                 tool_calls = ["complete_todo"]
                                 
@@ -221,7 +220,7 @@ Example: {{"todo_id": "1", "todo_title": ""}}"""
                         logger.info("Step 4b: Calling list_todos tool...")
                         tool_result = await asyncio.wait_for(
                             mcp_handler.list_todos(),
-                            timeout=15.0
+                            timeout=600.0
                         )
                         logger.info(f"Step 4c: list_todos completed with status={tool_result.get('status')}")
                         tool_calls = ["list_todos"]
@@ -245,7 +244,7 @@ Example: {{"todo_id": "1", "todo_title": ""}}"""
                             logger.warning(f"Step 4d: Failed to list todos: {error_msg}")
             
             except asyncio.TimeoutError:
-                logger.error("Step 4: Tool call timed out after 15 seconds")
+                logger.error("Step 4: Tool call timed out after 600 seconds")
                 llm_response = "✗ Tool call timed out. Please try again."
             except Exception as e:
                 logger.error(f"Step 4: Error calling MCP tool: {str(e)}", exc_info=True)
