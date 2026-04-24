@@ -29,22 +29,3 @@ class LLMProvider(ABC):
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts."""
         pass
-
-
-class ProviderFactory:
-    """Factory for creating LLM providers."""
-    
-    _providers = {}
-    
-    @classmethod
-    def register_provider(cls, name: str, provider_class):
-        """Register a provider."""
-        cls._providers[name] = provider_class
-    
-    @classmethod
-    def create_provider(cls, provider_type: str, **kwargs) -> LLMProvider:
-        """Create a provider instance."""
-        if provider_type not in cls._providers:
-            raise ValueError(f"Unknown provider: {provider_type}")
-        
-        return cls._providers[provider_type](**kwargs)

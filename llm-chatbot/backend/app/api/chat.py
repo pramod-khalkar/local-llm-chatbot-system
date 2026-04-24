@@ -112,7 +112,7 @@ async def send_message(
         logger.info(f"Calling orchestration service at {orchestration_url}")
         
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=600.0) as client:
                 llm_response = await client.post(
                     orchestration_url,
                     json=llm_request
@@ -120,7 +120,6 @@ async def send_message(
                 logger.info(f"Orchestration response status: {llm_response.status_code}")
                 llm_response.raise_for_status()
                 llm_data = llm_response.json()
-                logger.info(f"Orchestration response: {llm_data}")
             
             # Store assistant response message
             assistant_message = ChatMessageORM(

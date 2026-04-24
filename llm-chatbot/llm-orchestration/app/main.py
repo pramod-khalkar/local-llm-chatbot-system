@@ -12,7 +12,6 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 # Import orchestrator components
-from app.orchestrator.provider.base import ProviderFactory
 from app.orchestrator.provider.ollama_provider import OllamaProvider
 from app.orchestrator.query_router import QueryRouter
 from app.orchestrator.rag.faiss_handler import FAISSVectorStore
@@ -35,7 +34,7 @@ async def lifespan(app: FastAPI):
         embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
     )
     
-    query_router = QueryRouter()
+    query_router = QueryRouter(llm_provider=llm_provider)
     rag_store = FAISSVectorStore(index_path=os.getenv("FAISS_INDEX_PATH", "/data/faiss_index"), dimension=768)
     embeddings_pipeline = EmbeddingsPipeline(
         chunk_size=int(os.getenv("CHUNK_SIZE", 512)),
@@ -135,16 +134,22 @@ async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
                         # Extract title and description from query using LLM
                         logger.info("Step 4b: Extracting todo details from query...")
                         extraction_prompt = f"""Extract the todo task details from this request:
-"{query.query}"
+                        "{query.query}"
 
-Return ONLY a JSON object with:
-{{"title": "task title", "description": "optional description"}}
+                        Return ONLY a valid JSON object with NO extra text or markdown code blocks:
+                        {{"title": "task title", "description": "optional description"}}
 
-Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
-                        
+                        Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
+
                         extraction_response = await llm_provider.generate(prompt=extraction_prompt)
                         try:
-                            extracted = json.loads(extraction_response.get("response", "{}"))
+                            # Clean up potential markdown formatting
+                            raw_resp = extraction_response.get("response", "{}").strip()
+                            if raw_resp.startswith("```json"): raw_resp = raw_resp[7:]
+                            if raw_resp.startswith("```"): raw_resp = raw_resp[3:]
+                            if raw_resp.endswith("```"): raw_resp = raw_resp[:-3]
+
+                            extracted = json.loads(raw_resp.strip())
                             title = extracted.get("title", "New Task")
                             description = extracted.get("description", "")
                             logger.info(f"Step 4c: Extracted - title='{title}', description='{description}'")
@@ -182,16 +187,22 @@ Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
                         # Extract todo ID/title to complete
                         logger.info("Step 4b: Extracting todo ID/title for completion...")
                         extraction_prompt = f"""Extract the todo ID or title from this completion request:
-"{query.query}"
+                        "{query.query}"
 
-Return ONLY a JSON object with:
-{{"todo_id": "id if mentioned", "todo_title": "title if mentioned"}}
+                        Return ONLY a valid JSON object with NO extra text or markdown code blocks:
+                        {{"todo_id": "id if mentioned", "todo_title": "title if mentioned"}}
 
-Example: {{"todo_id": "1", "todo_title": ""}}"""
-                        
+                        Example: {{"todo_id": "1", "todo_title": ""}}"""
+
                         extraction_response = await llm_provider.generate(prompt=extraction_prompt)
                         try:
-                            extracted = json.loads(extraction_response.get("response", "{}"))
+                            # Clean up potential markdown formatting
+                            raw_resp = extraction_response.get("response", "{}").strip()
+                            if raw_resp.startswith("```json"): raw_resp = raw_resp[7:]
+                            if raw_resp.startswith("```"): raw_resp = raw_resp[3:]
+                            if raw_resp.endswith("```"): raw_resp = raw_resp[:-3]
+
+                            extracted = json.loads(raw_resp.strip())
                             todo_id = extracted.get("todo_id")
                             todo_title = extracted.get("todo_title")
                             
