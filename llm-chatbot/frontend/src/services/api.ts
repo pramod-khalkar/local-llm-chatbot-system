@@ -118,4 +118,12 @@ export const ragService = {
   },
 };
 
+export const configService = {
+  // Get application configuration
+  async getConfig(): Promise<{ model_name: string; environment: string; version: string }> {
+    const response = await apiClient.get('/config');
+    return response.data;
+  },
+};
+
 export default apiClient;

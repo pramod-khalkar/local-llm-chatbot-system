@@ -48,6 +48,16 @@ app.include_router(speech.router)
 app.include_router(rag.router)
 
 
+@app.get("/api/config")
+async def get_config():
+    """Returns the current application configuration."""
+    return {
+        "model_name": settings.ollama_model,
+        "environment": settings.environment,
+        "version": "1.0.0"
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""

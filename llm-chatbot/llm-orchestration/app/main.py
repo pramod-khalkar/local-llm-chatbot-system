@@ -5,6 +5,7 @@ import logging
 import os
 import asyncio
 import json
+import time # Added import for time module
 from typing import List, Optional
 
 # Configure logging
@@ -33,18 +34,25 @@ async def lifespan(app: FastAPI):
         host=ollama_host,
         embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
     )
-    
-    query_router = QueryRouter(llm_provider=llm_provider)
+
+    # Initialize MCPHandler FIRST
+    mcp_handler = MCPHandler(
+        host=os.getenv("MCP_SERVER_HOST", "localhost"),
+        port=int(os.getenv("MCP_SERVER_PORT", 8002))
+    )
+    logger.info(f"lifespan: mcp_handler initialized to = {mcp_handler}")
+    if mcp_handler is None:
+        raise RuntimeError("MCPHandler failed to initialize; it is None.")
+
+    # Then initialize QueryRouter with the now-initialized mcp_handler
+    query_router = QueryRouter(llm_provider=llm_provider, mcp_handler=mcp_handler)
+    await query_router._fetch_tools() # Explicitly fetch tools after initialization
+
     rag_store = FAISSVectorStore(index_path=os.getenv("FAISS_INDEX_PATH", "/data/faiss_index"), dimension=768)
     embeddings_pipeline = EmbeddingsPipeline(
         chunk_size=int(os.getenv("CHUNK_SIZE", 512)),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", 50))
     )
-    mcp_handler = MCPHandler(
-        host=os.getenv("MCP_SERVER_HOST", "localhost"),
-        port=int(os.getenv("MCP_SERVER_PORT", 8002))
-    )
-    
     logger.info("✓ Orchestration service initialized")
     yield
     logger.info("Orchestration service shutting down...")
@@ -84,28 +92,34 @@ async def health_check():
 @app.post("/api/orchestrator/chat", response_model=OrchestrationResponse)
 async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
     """Orchestrate chat with routing to RAG and tools."""
+    start_orchestration_time = time.time()
     try:
         logger.info(f"Orchestrating query: {query.query[:100]}...")
-        
+
         # Route query
+        start_routing_time = time.time()
         logger.info("Step 1: Routing query...")
         routing = await query_router.route_query(query.query, query.context)
-        logger.info(f"Step 1 done: query_type={routing.query_type}, tool_name={routing.tool_name}")
-        
-        # Get LLM response
-        logger.info("Step 2: Generating LLM response...")
+        routing_duration = time.time() - start_routing_time
+        logger.info(f"Step 1 done (took {routing_duration:.2f}s): query_type={routing.query_type}, tool_name={routing.tool_name}")
+
+        # Get LLM response (initial or default)
+        start_llm_gen_time = time.time()
+        logger.info("Step 2: Generating initial LLM response...")
         response = await llm_provider.generate(
             prompt=query.query,
             context=query.context
         )
-        logger.info("Step 2 done: LLM response generated")
-        
+        llm_gen_duration = time.time() - start_llm_gen_time
+        logger.info(f"Step 2 done (took {llm_gen_duration:.2f}s): LLM response generated")
+
         sources = []
         tool_calls = []
         llm_response = response.get("response", "")
-        
+
         # If RAG required, search documents
         if routing.rag_required and query.use_rag:
+            start_rag_time = time.time()
             logger.info(f"Step 3: RAG search triggered for query: {query.query[:50]}...")
             try:
                 embedding = await llm_provider.embed_text(query.query)
@@ -116,154 +130,102 @@ async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
                 for i, r in enumerate(results):
                     logger.info(f"Step 3d: Result {i}: score={r.get('score')}, content_len={len(r.get('content', ''))}")
                 sources = [r.get("content", "")[:100] for r in results]
-                logger.info(f"Step 3 done: Found {len(sources)} RAG sources")
+                rag_duration = time.time() - start_rag_time
+                logger.info(f"Step 3 done (took {rag_duration:.2f}s): Found {len(sources)} RAG sources")
             except Exception as e:
                 logger.error(f"Step 3 Error: {str(e)}", exc_info=True)
                 sources = []
-        
+
         # If tool required, call appropriate MCP tool
-        if routing.query_type == "tool" and query.use_tools:
-            logger.info(f"Step 4: Tool call triggered for tool: {routing.tool_name}, action: {routing.tool_action}")
+        if routing.query_type == "tool" and query.use_tools and routing.tool_name:
+            start_tool_time = time.time()
+            logger.info(f"Step 4: Tool call triggered for tool: {routing.tool_name}")
+            tool_calls = [routing.tool_name] # Mark tool as called
+
             try:
-                # For todo-related queries, dispatch based on action
-                if routing.tool_name == "todo":
-                    tool_action = routing.tool_action or "list"
-                    logger.info(f"Step 4a: Todo action detected: {tool_action}")
-                    
-                    if tool_action == "create":
-                        # Extract title and description from query using LLM
-                        logger.info("Step 4b: Extracting todo details from query...")
-                        extraction_prompt = f"""Extract the todo task details from this request:
-                        "{query.query}"
+                # Extract tool name and parameters
+                tool_name = routing.tool_name
+                tool_params = routing.tool_params if routing.tool_params is not None else {}
 
-                        Return ONLY a valid JSON object with NO extra text or markdown code blocks:
-                        {{"title": "task title", "description": "optional description"}}
-
-                        Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
-
-                        extraction_response = await llm_provider.generate(prompt=extraction_prompt)
-                        try:
-                            # Clean up potential markdown formatting
-                            raw_resp = extraction_response.get("response", "{}").strip()
-                            if raw_resp.startswith("```json"): raw_resp = raw_resp[7:]
-                            if raw_resp.startswith("```"): raw_resp = raw_resp[3:]
-                            if raw_resp.endswith("```"): raw_resp = raw_resp[:-3]
-
-                            extracted = json.loads(raw_resp.strip())
-                            title = extracted.get("title", "New Task")
-                            description = extracted.get("description", "")
-                            logger.info(f"Step 4c: Extracted - title='{title}', description='{description}'")
-                            
-                            tool_result = await asyncio.wait_for(
-                                mcp_handler.create_todo(title, description),
-                                timeout=600.0
-                            )
-                            logger.info(f"Step 4d: create_todo completed with status={tool_result.get('status')}")
-                            tool_calls = ["create_todo"]
-                            
-                            if tool_result.get("status") == "success":
-                                todo_data = tool_result.get("data", {})
-                                todo_id = todo_data.get("id", "")
-                                llm_response = f"✓ Todo created successfully!\n\nTitle: {title}\nID: {todo_id}\nDescription: {description}"
-                                logger.info("Step 4e: Todo created successfully")
-                            else:
-                                error_msg = tool_result.get("message", "Unknown error")
-                                llm_response = f"✗ Failed to create todo: {error_msg}"
-                                logger.warning(f"Step 4e: Todo creation failed: {error_msg}")
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse extraction response as JSON, using defaults")
-                            title = query.query[:50]  # Use first 50 chars as title
-                            tool_result = await asyncio.wait_for(
-                                mcp_handler.create_todo(title, ""),
-                                timeout=600.0
-                            )
-                            tool_calls = ["create_todo"]
-                            if tool_result.get("status") == "success":
-                                llm_response = f"✓ Todo created: {title}"
-                            else:
-                                llm_response = f"✗ Failed to create todo: {tool_result.get('message')}"
-                    
-                    elif tool_action == "complete":
-                        # Extract todo ID/title to complete
-                        logger.info("Step 4b: Extracting todo ID/title for completion...")
-                        extraction_prompt = f"""Extract the todo ID or title from this completion request:
-                        "{query.query}"
-
-                        Return ONLY a valid JSON object with NO extra text or markdown code blocks:
-                        {{"todo_id": "id if mentioned", "todo_title": "title if mentioned"}}
-
-                        Example: {{"todo_id": "1", "todo_title": ""}}"""
-
-                        extraction_response = await llm_provider.generate(prompt=extraction_prompt)
-                        try:
-                            # Clean up potential markdown formatting
-                            raw_resp = extraction_response.get("response", "{}").strip()
-                            if raw_resp.startswith("```json"): raw_resp = raw_resp[7:]
-                            if raw_resp.startswith("```"): raw_resp = raw_resp[3:]
-                            if raw_resp.endswith("```"): raw_resp = raw_resp[:-3]
-
-                            extracted = json.loads(raw_resp.strip())
-                            todo_id = extracted.get("todo_id")
-                            todo_title = extracted.get("todo_title")
-                            
-                            if todo_id:
-                                logger.info(f"Step 4c: Completing todo ID: {todo_id}")
-                                tool_result = await asyncio.wait_for(
-                                    mcp_handler.complete_todo(todo_id),
-                                    timeout=600.0
-                                )
-                                tool_calls = ["complete_todo"]
-                                
-                                if tool_result.get("status") == "success":
-                                    llm_response = f"✓ Todo marked as complete!"
-                                    logger.info("Step 4d: Todo completed successfully")
-                                else:
-                                    llm_response = f"✗ Failed to complete todo: {tool_result.get('message')}"
-                                    logger.warning(f"Step 4d: Failed to complete: {tool_result.get('message')}")
-                            else:
-                                llm_response = "⚠ Could not identify which todo to complete. Please specify the todo ID or title."
-                                logger.warning("Step 4c: Could not extract todo ID/title")
-                        except json.JSONDecodeError:
-                            llm_response = "⚠ Could not parse todo details for completion"
-                            logger.warning("Failed to parse completion extraction")
-                    
-                    else:  # list or default
-                        logger.info("Step 4b: Calling list_todos tool...")
+                tool_result = None
+                if tool_name == "create_todo":
+                    title = tool_params.get("title")
+                    description = tool_params.get("description", "")
+                    if not title:
+                        llm_response = "✗ Missing title for todo creation."
+                        logger.warning("Step 4: create_todo called without a title.")
+                    else:
                         tool_result = await asyncio.wait_for(
-                            mcp_handler.list_todos(),
+                            mcp_handler.create_todo(title, description),
                             timeout=600.0
                         )
-                        logger.info(f"Step 4c: list_todos completed with status={tool_result.get('status')}")
-                        tool_calls = ["list_todos"]
-                        
-                        if tool_result.get("status") == "success":
-                            todos = tool_result.get("todos", [])
-                            if todos:
-                                todo_summary = f"You have {len(todos)} todo(s):\n\n"
-                                for i, todo in enumerate(todos, 1):
-                                    title = todo.get("title", "")
-                                    status = todo.get("status", "")
-                                    todo_id = todo.get("id", "")
-                                    todo_summary += f"{i}. [{status}] {title} (ID: {todo_id})\n"
-                                llm_response = todo_summary
-                            else:
-                                llm_response = "✓ You have no todos! Great job!"
-                            logger.info(f"Step 4d: Todo list generated: {len(todos)} todos")
+                        if tool_result and tool_result.get("status") == "success":
+                            todo_data = tool_result.get("data", {})
+                            todo_id = todo_data.get("id", "")
+                            llm_response = f"✓ Todo created successfully!\n\nTitle: {title}\nID: {todo_id}\nDescription: {description}"
+                            logger.info("Step 4: create_todo completed successfully.")
                         else:
                             error_msg = tool_result.get("message", "Unknown error")
-                            llm_response = f"✗ Failed to list todos: {error_msg}"
-                            logger.warning(f"Step 4d: Failed to list todos: {error_msg}")
-            
+                            llm_response = f"✗ Failed to create todo: {error_msg}"
+                            logger.warning(f"Step 4: create_todo failed: {error_msg}")
+
+                elif tool_name == "list_todos":
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.list_todos(),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        todos = tool_result.get("todos", [])
+                        if todos:
+                            todo_summary = f"You have {len(todos)} todo(s):\n\n"
+                            for i, todo in enumerate(todos, 1):
+                                title = todo.get("title", "")
+                                status = todo.get("status", "")
+                                todo_id = todo.get("id", "")
+                                todo_summary += f"{i}. [{status}] {title} (ID: {todo_id})\n"
+                            llm_response = todo_summary
+                        else:
+                            llm_response = "✓ You have no todos! Great job!"
+                        logger.info("Step 4: list_todos completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to list todos: {error_msg}"
+                        logger.warning(f"Step 4: list_todos failed: {error_msg}")
+
+                elif tool_name == "complete_todo":
+                    todo_id = tool_params.get("id")
+                    if not todo_id:
+                        llm_response = "✗ Missing todo ID for completion."
+                        logger.warning("Step 4: complete_todo called without an ID.")
+                    else:
+                        tool_result = await asyncio.wait_for(
+                            mcp_handler.complete_todo(todo_id),
+                            timeout=600.0
+                        )
+                        if tool_result and tool_result.get("status") == "success":
+                            llm_response = f"✓ Todo {todo_id} marked as complete!"
+                            logger.info(f"Step 4: complete_todo for ID {todo_id} completed successfully.")
+                        else:
+                            error_msg = tool_result.get("message", "Unknown error")
+                            llm_response = f"✗ Failed to complete todo {todo_id}: {error_msg}"
+                            logger.warning(f"Step 4: complete_todo for ID {todo_id} failed: {error_msg}")
+                else:
+                    llm_response = f"⚠ Tool '{tool_name}' is not directly supported by this orchestrator for direct invocation."
+                    logger.warning(f"Step 4: Unsupported tool '{tool_name}' invoked.")
+
+                tool_duration = time.time() - start_tool_time
+                logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' completed.")
+
             except asyncio.TimeoutError:
                 logger.error("Step 4: Tool call timed out after 600 seconds")
                 llm_response = "✗ Tool call timed out. Please try again."
             except Exception as e:
-                logger.error(f"Step 4: Error calling MCP tool: {str(e)}", exc_info=True)
-                llm_response = f"✗ Error: {str(e)}"
-        
-        logger.info("Returning orchestration response...")
-        return OrchestrationResponse(
-            response=llm_response,
+                logger.error(f"Step 4: Error calling MCP tool '{tool_name}': {str(e)}", exc_info=True)
+                llm_response = f"✗ Error calling tool '{tool_name}': {str(e)}"
+
+        total_orchestration_duration = time.time() - start_orchestration_time
+        logger.info(f"Returning orchestration response (total duration: {total_orchestration_duration:.2f}s)...")
+        return OrchestrationResponse(            response=llm_response,
             query_type=routing.query_type,
             sources=sources,
             tool_calls=tool_calls,

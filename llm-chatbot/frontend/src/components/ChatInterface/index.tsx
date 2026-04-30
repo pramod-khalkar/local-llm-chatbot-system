@@ -5,6 +5,7 @@ import { MessageList } from '@/components/MessageList';
 import { VoiceInput } from '@/components/VoiceInput';
 import DocumentUpload from '@/components/DocumentUpload';
 import { useChat } from '@/hooks/useChat';
+import { configService } from '@/services/api';
 import { Send } from 'lucide-react';
 
 export const ChatInterface: React.FC = () => {
@@ -12,12 +13,21 @@ export const ChatInterface: React.FC = () => {
   const [useRag, setUseRag] = useState(true);
   const [useTools, setUseTools] = useState(true);
   const [uploadNotification, setUploadNotification] = useState('');
+  const [modelName, setModelName] = useState('Loading...');
   
   const { session, messages, loading, error, createSession, sendMessage } = useChat();
 
   useEffect(() => {
     // Create initial session
     createSession('LLM Chatbot Session');
+
+    // Fetch config
+    configService.getConfig()
+      .then(config => setModelName(config.model_name))
+      .catch(err => {
+        console.error('Failed to fetch config:', err);
+        setModelName('Unknown Model');
+      });
   }, [createSession]);
 
   const handleSendMessage = async (text?: string) => {
@@ -47,7 +57,7 @@ export const ChatInterface: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-white">🤖 LLM Chatbot</h1>
           <p className="text-sm text-gray-200">
-            Powered by llama2 • RAG Enabled • Tool Integration
+            Powered by {modelName} • RAG Enabled • Tool Integration
           </p>
         </div>
         <DocumentUpload onUploadComplete={handleUploadComplete} />

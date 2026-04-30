@@ -13,7 +13,7 @@ class OllamaProvider(LLMProvider):
     
     def __init__(
         self,
-        model_name: str = os.getenv("OLLAMA_MODEL", "llama2"),
+        model_name: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
         temperature: float = 0.7,
         max_tokens: int = 2048,
         host: str = "http://localhost:11434",
