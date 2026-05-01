@@ -103,38 +103,47 @@ async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
         routing_duration = time.time() - start_routing_time
         logger.info(f"Step 1 done (took {routing_duration:.2f}s): query_type={routing.query_type}, tool_name={routing.tool_name}")
 
-        # Get LLM response (initial or default)
+        llm_response = ""
+        sources = []
+        tool_calls = []
+        augmented_prompt = query.query # Initialize augmented_prompt with the original query
+
+        # If RAG required, search documents and augment prompt
+        if routing.rag_required and query.use_rag:
+            start_rag_time = time.time()
+            logger.info(f"Step 2: RAG search triggered for query: {query.query[:50]}...")
+            try:
+                embedding = await llm_provider.embed_text(query.query)
+                logger.info(f"Step 2a: Embedding generated, dimensions={len(embedding) if embedding else 0}")
+                logger.info(f"Step 2b: Index stats before search: {rag_store.get_stats()}")
+                results = rag_store.search(embedding, k=5, threshold=0.0)
+                logger.info(f"Step 2c: RAG search returned {len(results)} results")
+                
+                if results:
+                    full_sources_content = "\n\n".join([r.get("content", "") for r in results])
+                    augmented_prompt = f"Based on the following documents:\n\n{full_sources_content}\n\nAnswer the question: {query.query}"
+                    sources = [r.get("content", "")[:100] for r in results] # Store truncated sources for metadata
+                    logger.info(f"Step 2d: Augmented prompt created with {len(results)} RAG sources.")
+                else:
+                    logger.info("Step 2d: No RAG sources found, proceeding with original query.")
+
+                rag_duration = time.time() - start_rag_time
+                logger.info(f"Step 2 done (took {rag_duration:.2f}s): Found {len(sources)} RAG sources (truncated for metadata)")
+            except Exception as e:
+                logger.error(f"Step 2 Error: {str(e)}", exc_info=True)
+                sources = []
+                augmented_prompt = query.query # Fallback to original query if RAG fails
+
+        # Get LLM response
         start_llm_gen_time = time.time()
-        logger.info("Step 2: Generating initial LLM response...")
+        logger.info("Step 3: Generating LLM response...")
         response = await llm_provider.generate(
-            prompt=query.query,
+            prompt=augmented_prompt,
             context=query.context
         )
         llm_gen_duration = time.time() - start_llm_gen_time
-        logger.info(f"Step 2 done (took {llm_gen_duration:.2f}s): LLM response generated")
-
-        sources = []
-        tool_calls = []
         llm_response = response.get("response", "")
-
-        # If RAG required, search documents
-        if routing.rag_required and query.use_rag:
-            start_rag_time = time.time()
-            logger.info(f"Step 3: RAG search triggered for query: {query.query[:50]}...")
-            try:
-                embedding = await llm_provider.embed_text(query.query)
-                logger.info(f"Step 3a: Embedding generated, dimensions={len(embedding) if embedding else 0}")
-                logger.info(f"Step 3b: Index stats before search: {rag_store.get_stats()}")
-                results = rag_store.search(embedding, k=5, threshold=0.0)
-                logger.info(f"Step 3c: RAG search returned {len(results)} results")
-                for i, r in enumerate(results):
-                    logger.info(f"Step 3d: Result {i}: score={r.get('score')}, content_len={len(r.get('content', ''))}")
-                sources = [r.get("content", "")[:100] for r in results]
-                rag_duration = time.time() - start_rag_time
-                logger.info(f"Step 3 done (took {rag_duration:.2f}s): Found {len(sources)} RAG sources")
-            except Exception as e:
-                logger.error(f"Step 3 Error: {str(e)}", exc_info=True)
-                sources = []
+        logger.info(f"Step 3 done (took {llm_gen_duration:.2f}s): LLM response generated")
 
         # If tool required, call appropriate MCP tool
         if routing.query_type == "tool" and query.use_tools and routing.tool_name:

@@ -64,24 +64,26 @@ class QueryRouter:
             tools_desc = self._get_tools_description()
 
             # Construct the prompt with tool information
-            prompt = f"""You are a routing assistant. Your task is to analyze the user's query and decide whether it should be handled as a general chat, a RAG query (requiring document retrieval), or a specific tool call. Respond ONLY with a valid JSON object. Do not include any other text, explanations, or markdown formatting.
+            prompt = f"""You are an intelligent routing assistant for an LLM application. Your primary goal is to accurately categorize user queries to determine the best handling mechanism: a specific tool call, a RAG (Retrieval Augmented Generation) search, or a general chat response. Respond ONLY with a valid JSON object. Do not include any other text, explanations, or markdown formatting.
+
+**Decision Hierarchy:**
+1.  **Tool:** If the query clearly indicates an intent to perform a specific action that matches one of the `Available tools`, prioritize this. Extract all necessary parameters.
+2.  **RAG:** If the query asks for information retrieval, summarization of documents, answering factual questions based on external knowledge, or extracting details from "my documents," route to RAG.
+3.  **Chat:** If the query is a general conversation, greeting, or does not fit the criteria for a Tool or RAG, classify it as Chat.
 
 {tools_desc}
 
-If the query explicitly asks to perform an action that matches one of the available tools, you MUST choose 'tool' as the query_type and provide the 'tool_name', 'tool_action', and 'tool_params' by extracting relevant information from the query. The 'tool_action' should correspond to the action implied by the query (e.g., 'create', 'list', 'complete' for todo tools). The 'tool_params' should be a dictionary of parameters required by the tool.
-
-If the query is a factual question that might benefit from external knowledge, choose 'rag'.
-Otherwise, default to 'chat'.
+Consider the full intent of the 'Query'. If a query implies an action, it's likely a tool. If it implies needing information from a knowledge base or documents, it's RAG.
 
 Query: "{query}"
 
 JSON format examples:
 
 1. General chat:
-{{"query_type": "chat", "confidence": 0.9, "tool_name": null, "tool_action": null, "tool_params": null, "rag_required": false, "rationale": "The user is just chatting."}}
+{{"query_type": "chat", "confidence": 0.9, "tool_name": null, "tool_action": null, "tool_params": null, "rag_required": false, "rationale": "The user is engaging in general conversation."}}
 
-2. RAG query:
-{{"query_type": "rag", "confidence": 0.8, "tool_name": null, "tool_action": null, "tool_params": null, "rag_required": true, "rationale": "The user is asking a factual question about a specific topic."}}
+2. RAG query (e.g., summarizing documents, extracting info):
+{{"query_type": "rag", "confidence": 0.9, "tool_name": null, "tool_action": null, "tool_params": null, "rag_required": true, "rationale": "The user requires information extraction or summarization from documents."}}
 
 3. Tool call (e.g., creating a todo):
 {{"query_type": "tool", "confidence": 0.95, "tool_name": "create_todo", "tool_action": "create", "tool_params": {{"title": "Buy groceries", "description": "milk, eggs, bread"}}, "rag_required": false, "rationale": "The user wants to create a new todo task."}}
