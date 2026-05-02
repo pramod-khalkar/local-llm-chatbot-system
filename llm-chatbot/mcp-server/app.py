@@ -16,7 +16,7 @@ TODO_API_BASE_URL = os.getenv("TODO_API_BASE_URL", "http://localhost:8080")
 
 # Models for request/response handling
 class Todo(BaseModel):
-    id: Optional[int] = None
+    id: Optional[str] = None
     title: str
     description: Optional[str] = None
     status: Optional[str] = "PENDING"
@@ -79,7 +79,7 @@ class TodoAPIClient:
             logger.error(f"Error listing todos: {str(e)}")
             return {"status": "error", "message": str(e)}
     
-    async def get_todo(self, todo_id: int) -> Dict[str, Any]:
+    async def get_todo(self, todo_id: str) -> Dict[str, Any]:
         """Get a single todo."""
         try:
             response = await self.client.get(
@@ -94,7 +94,7 @@ class TodoAPIClient:
             logger.error(f"Error getting todo: {str(e)}")
             return {"status": "error", "message": str(e)}
     
-    async def update_todo(self, todo_id: int, **kwargs) -> Dict[str, Any]:
+    async def update_todo(self, todo_id: str, **kwargs) -> Dict[str, Any]:
         """Update a todo."""
         try:
             response = await self.client.put(
@@ -110,7 +110,7 @@ class TodoAPIClient:
             logger.error(f"Error updating todo: {str(e)}")
             return {"status": "error", "message": str(e)}
     
-    async def delete_todo(self, todo_id: int) -> Dict[str, Any]:
+    async def delete_todo(self, todo_id: str) -> Dict[str, Any]:
         """Delete a todo."""
         try:
             response = await self.client.delete(
@@ -161,22 +161,22 @@ async def get_tools():
             {
                 "name": "get_todo",
                 "description": "Get a specific todo by ID",
-                "params": {"id": "int"}
+                "params": {"id": "str"}
             },
             {
                 "name": "complete_todo",
                 "description": "Mark a todo as complete",
-                "params": {"id": "int"}
+                "params": {"id": "str"}
             },
             {
                 "name": "update_todo",
                 "description": "Update a todo task",
-                "params": {"id": "int", "title": "str (optional)", "description": "str (optional)", "status": "str (optional)"}
+                "params": {"id": "str", "title": "str (optional)", "description": "str (optional)", "status": "str (optional)"}
             },
             {
                 "name": "delete_todo",
                 "description": "Delete a todo task",
-                "params": {"id": "int"}
+                "params": {"id": "str"}
             }
         ]
     }
@@ -227,7 +227,7 @@ async def get_todo_tool(request: Dict[str, Any]):
         if not todo_id:
             return {"status": "error", "message": "ID is required"}
         
-        result = await todo_client.get_todo(int(todo_id))
+        result = await todo_client.get_todo(todo_id)
         return result
     
     except Exception as e:
@@ -245,7 +245,7 @@ async def complete_todo_tool(request: Dict[str, Any]):
         if not todo_id:
             return {"status": "error", "message": "ID is required"}
         
-        result = await todo_client.update_todo(int(todo_id), status="COMPLETED")
+        result = await todo_client.update_todo(todo_id, status="COMPLETED")
         return result
     
     except Exception as e:
@@ -271,7 +271,7 @@ async def update_todo_tool(request: Dict[str, Any]):
         if "status" in params:
             update_data["status"] = params["status"]
         
-        result = await todo_client.update_todo(int(todo_id), **update_data)
+        result = await todo_client.update_todo(todo_id, **update_data)
         return result
     
     except Exception as e:
@@ -289,7 +289,7 @@ async def delete_todo_tool(request: Dict[str, Any]):
         if not todo_id:
             return {"status": "error", "message": "ID is required"}
         
-        result = await todo_client.delete_todo(int(todo_id))
+        result = await todo_client.delete_todo(todo_id)
         return result
     
     except Exception as e:

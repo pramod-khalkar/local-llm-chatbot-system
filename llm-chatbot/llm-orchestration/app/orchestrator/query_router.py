@@ -67,13 +67,16 @@ class QueryRouter:
             prompt = f"""You are an intelligent routing assistant for an LLM application. Your primary goal is to accurately categorize user queries to determine the best handling mechanism: a specific tool call, a RAG (Retrieval Augmented Generation) search, or a general chat response. Respond ONLY with a valid JSON object. Do not include any other text, explanations, or markdown formatting.
 
 **Decision Hierarchy:**
-1.  **Tool:** If the query clearly indicates an intent to perform a specific action that matches one of the `Available tools`, prioritize this. Extract all necessary parameters.
-2.  **RAG:** If the query asks for information retrieval, summarization of documents, answering factual questions based on external knowledge, or extracting details from "my documents," route to RAG.
+1.  **Tool:** If the query clearly indicates an intent to perform an action that aligns with any of the `Available tools`, prioritize this. All parameter values for the `tool_params` object MUST be dynamically extracted from the user's current query and NEVER hardcoded from examples.
+    *   **Parameter Extraction:** For the identified tool, diligently extract all required and optional parameters from the user's query. Match keywords, infer types, and look for specific values.
+    *   **ID Extraction:** If a tool requires an 'id' (e.g., for updating, completing, or retrieving a specific item), you MUST make a strong effort to extract this 'id' from the user's query or implied context. **IDs are typically UUID strings or numeric identifiers. If you cannot confidently extract a valid-looking ID from the query (e.g., it appears to be a descriptive phrase, not an ID), you MUST set `query_type` to "chat", `tool_name` to `null`, `tool_params` to `null`, `rag_required` to `false`, and provide a `rationale` asking the user for the missing valid ID.**
+    *   **Tool Action:** Determine the appropriate `tool_action` (e.g., "create", "list", "update", "complete") based on the user's explicit or implicit request.
+2.  **RAG:** If the query seeks information retrieval, summarization of documents, answers to factual questions based on external knowledge, or extraction of details from "my documents," route to RAG.
 3.  **Chat:** If the query is a general conversation, greeting, or does not fit the criteria for a Tool or RAG, classify it as Chat.
 
 {tools_desc}
 
-Consider the full intent of the 'Query'. If a query implies an action, it's likely a tool. If it implies needing information from a knowledge base or documents, it's RAG.
+**General Guidance:** Always consider the full intent of the 'Query'. If a query implies an action, it is highly likely a tool. If it implies needing information from a knowledge base or documents, it is RAG. Your primary goal is to extract actionable information for tools or clearly identify the need for retrieval for RAG.
 
 Query: "{query}"
 
@@ -90,6 +93,9 @@ JSON format examples:
 
 4. Tool call (e.g., listing todos):
 {{"query_type": "tool", "confidence": 0.9, "tool_name": "list_todos", "tool_action": "list", "tool_params": {{}}, "rag_required": false, "rationale": "The user wants to see their todo list."}}
+
+5. Tool call (e.g., updating a todo):
+{{"query_type": "tool", "confidence": 0.95, "tool_name": "update_todo", "tool_action": "update", "tool_params": {{"id": "<todo_id>", "title": "Buy organic groceries", "status": "pending"}}, "rag_required": false, "rationale": "The user wants to modify an existing todo task by ID."}}
 
 Your JSON response:
 """

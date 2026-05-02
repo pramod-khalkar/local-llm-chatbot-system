@@ -18,6 +18,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
 
@@ -33,10 +38,19 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
     healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/null >/dev/tcp/localhost/11434' || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 1 bash -c '</dev/null >/dev/tcp/localhost/11434' || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,7 +77,11 @@ services:
       - LOG_LEVEL=INFO
       - ENVIRONMENT=development
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/docs').status\" || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8000/docs'').status" || exit 1',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,6 +91,11 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
 
@@ -98,7 +121,11 @@ services:
     volumes:
       - faiss_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs').status\" || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8001/docs'').status" || exit 1',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -108,6 +135,11 @@ services:
         condition: service_healthy
       mcp-server:
         condition: service_started
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
 
@@ -128,11 +160,20 @@ services:
       - LOG_LEVEL=INFO
       - TODO_API_BASE_URL=http://todoapp-api:8080
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health').status\" || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8002/health'').status" || exit 1',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
 
@@ -150,7 +191,11 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api
       - NEXT_PUBLIC_ORCHESTRATION_URL=http://localhost:8001/api
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000').status\" || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:3000'').status" || exit 1',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -158,6 +203,11 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        labels: "container,source,node"
     networks:
       - chatbot_network
 

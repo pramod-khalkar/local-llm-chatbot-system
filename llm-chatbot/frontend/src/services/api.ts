@@ -7,7 +7,7 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 300000, // 300 seconds for LLM response
+  timeout: 600000, // 600 seconds (10 minutes) for LLM response
 });
 
 export interface ChatMessage {

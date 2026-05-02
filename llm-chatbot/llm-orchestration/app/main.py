@@ -203,21 +203,120 @@ async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
 
                 elif tool_name == "complete_todo":
                     todo_id = tool_params.get("id")
+                    current_llm_response = "" # To store temporary messages during ID resolution
+
                     if not todo_id:
-                        llm_response = "✗ Missing todo ID for completion."
-                        logger.warning("Step 4: complete_todo called without an ID.")
-                    else:
-                        tool_result = await asyncio.wait_for(
-                            mcp_handler.complete_todo(todo_id),
+                        # Attempt to resolve ID from query if not provided
+                        logger.info("Step 4: complete_todo called without explicit ID, attempting resolution.")
+                        search_term = query.query # Use the full query for search
+                        list_result = await asyncio.wait_for(
+                            mcp_handler.list_todos(search=search_term),
                             timeout=600.0
                         )
-                        if tool_result and tool_result.get("status") == "success":
-                            llm_response = f"✓ Todo {todo_id} marked as complete!"
-                            logger.info(f"Step 4: complete_todo for ID {todo_id} completed successfully.")
+                        if list_result and list_result.get("status") == "success":
+                            todos = list_result.get("todos", [])
+                            if len(todos) == 1:
+                                todo_id = todos[0].get("id")
+                                logger.info(f"Resolved ID '{todo_id}' for completion from search term '{search_term}'.")
+                            elif len(todos) > 1:
+                                summary = "\n".join([f"- {t.get('title')} (ID: {t.get('id')})" for t in todos])
+                                current_llm_response = f"✗ Multiple todos found for '{search_term}'. Please specify by ID or provide more details:\n{summary}"
+                                logger.warning(f"Step 4: complete_todo failed due to ambiguous ID resolution for search term '{search_term}'.")
+                            else:
+                                current_llm_response = f"✗ No todo found matching '{search_term}' for completion."
+                                logger.warning(f"Step 4: complete_todo failed, no todo found for search term '{search_term}'.")
                         else:
-                            error_msg = tool_result.get("message", "Unknown error")
-                            llm_response = f"✗ Failed to complete todo {todo_id}: {error_msg}"
-                            logger.warning(f"Step 4: complete_todo for ID {todo_id} failed: {error_msg}")
+                            error_msg = list_result.get("message", "Unknown error during todo lookup")
+                            current_llm_response = f"✗ Failed to search for todos to complete: {error_msg}"
+                            logger.warning(f"Step 4: complete_todo failed during lookup: {error_msg}")
+
+                    if not todo_id: # If ID is still missing after resolution attempt, or resolution resulted in a message
+                        llm_response = current_llm_response if current_llm_response else "✗ Missing todo ID for completion after resolution attempt."
+                        tool_duration = time.time() - start_tool_time
+                        logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' skipped due to ID resolution issue.")
+                        return OrchestrationResponse(
+                            response=llm_response,
+                            query_type=routing.query_type,
+                            sources=sources,
+                            tool_calls=tool_calls,
+                            tokens=response.get("tokens")
+                        )
+
+                    # Proceed with tool call if ID is now resolved
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.complete_todo(todo_id),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        llm_response = f"✓ Todo {todo_id} marked as complete!"
+                        logger.info(f"Step 4: complete_todo for ID {todo_id} completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to complete todo {todo_id}: {error_msg}"
+                        logger.warning(f"Step 4: complete_todo for ID {todo_id} failed: {error_msg}")
+
+                elif tool_name == "update_todo":
+                    todo_id = tool_params.get("id")
+                    current_llm_response = "" # To store temporary messages during ID resolution
+
+                    if not todo_id:
+                        # Attempt to resolve ID from query if not provided
+                        logger.info("Step 4: update_todo called without explicit ID, attempting resolution.")
+                        search_term = query.query # Use the full query for search
+                        list_result = await asyncio.wait_for(
+                            mcp_handler.list_todos(search=search_term),
+                            timeout=600.0
+                        )
+                        if list_result and list_result.get("status") == "success":
+                            todos = list_result.get("todos", [])
+                            if len(todos) == 1:
+                                todo_id = todos[0].get("id")
+                                logger.info(f"Resolved ID '{todo_id}' for update from search term '{search_term}'.")
+                            elif len(todos) > 1:
+                                summary = "\n".join([f"- {t.get('title')} (ID: {t.get('id')})" for t in todos])
+                                current_llm_response = f"✗ Multiple todos found for '{search_term}'. Please specify by ID or provide more details:\n{summary}"
+                                logger.warning(f"Step 4: update_todo failed due to ambiguous ID resolution for search term '{search_term}'.")
+                            else:
+                                current_llm_response = f"✗ No todo found matching '{search_term}' for update."
+                                logger.warning(f"Step 4: update_todo failed, no todo found for search term '{search_term}'.")
+                        else:
+                            error_msg = list_result.get("message", "Unknown error during todo lookup")
+                            current_llm_response = f"✗ Failed to search for todos to update: {error_msg}"
+                            logger.warning(f"Step 4: update_todo failed during lookup: {error_msg}")
+                    
+                    if not todo_id: # If ID is still missing after resolution attempt, or resolution resulted in a message
+                        llm_response = current_llm_response if current_llm_response else "✗ Missing todo ID for update after resolution attempt."
+                        tool_duration = time.time() - start_tool_time
+                        logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' skipped due to ID resolution issue.")
+                        return OrchestrationResponse(
+                            response=llm_response,
+                            query_type=routing.query_type,
+                            sources=sources,
+                            tool_calls=tool_calls,
+                            tokens=response.get("tokens")
+                        )
+
+                    # Proceed with tool call if ID is now resolved
+                    title = tool_params.get("title")
+                    description = tool_params.get("description")
+                    status = tool_params.get("status")
+
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.update_todo(
+                            todo_id=todo_id,
+                            title=title,
+                            description=description,
+                            status=status
+                        ),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        llm_response = f"✓ Todo {todo_id} updated successfully!"
+                        logger.info(f"Step 4: update_todo for ID {todo_id} completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to update todo {todo_id}: {error_msg}"
+                        logger.warning(f"Step 4: update_todo for ID {todo_id} failed: {error_msg}")
                 else:
                     llm_response = f"⚠ Tool '{tool_name}' is not directly supported by this orchestrator for direct invocation."
                     logger.warning(f"Step 4: Unsupported tool '{tool_name}' invoked.")

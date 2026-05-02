@@ -59,3 +59,14 @@ class MCPHandler:
     async def complete_todo(self, todo_id: str) -> Dict[str, Any]:
         """Mark a todo as complete via MCP."""
         return await self.call_tool("complete_todo", {"id": todo_id})
+    
+    async def update_todo(self, todo_id: str, title: Optional[str] = None, description: Optional[str] = None, status: Optional[str] = None) -> Dict[str, Any]:
+        """Update a todo task via MCP."""
+        params = {"id": todo_id}
+        if title is not None:
+            params["title"] = title
+        if description is not None:
+            params["description"] = description
+        if status is not None:
+            params["status"] = status
+        return await self.call_tool("update_todo", params)
