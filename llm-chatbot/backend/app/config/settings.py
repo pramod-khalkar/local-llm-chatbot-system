@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     
     # LLM Configuration
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama2")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
     llm_provider: str = os.getenv("LLM_PROVIDER", "ollama")
     temperature: float = float(os.getenv("TEMPERATURE", 0.7))
     max_tokens: int = int(os.getenv("MAX_TOKENS", 2048))

@@ -271,6 +271,20 @@ class TodoControllerTest {
 
             verify(todoService, times(1)).getTodosByStatus(TodoStatus.COMPLETED);
         }
+
+        @Test
+        @DisplayName("Should filter todos by lowercase status")
+        void testFilterTodosByLowercaseStatus() throws Exception {
+            List<TodoDTO> pendingTodos = Arrays.asList(todoDTO);
+            when(todoService.getTodosByStatus(TodoStatus.PENDING)).thenReturn(pendingTodos);
+
+            mockMvc.perform(get("/api/todos?status=pending"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$", hasSize(1)))
+                    .andExpect(jsonPath("$[0].status").value("PENDING"));
+
+            verify(todoService, times(1)).getTodosByStatus(TodoStatus.PENDING);
+        }
     }
 
     @Nested
@@ -422,6 +436,29 @@ class TodoControllerTest {
                     .andExpect(status().isNotFound());
 
             verify(todoService, times(1)).updateTodo(eq("999"), any(CreateTodoRequest.class));
+        }
+
+        @Test
+        @DisplayName("Should update todo successfully with lowercase status")
+        void testUpdateTodoLowercaseStatus() throws Exception {
+            String json = "{\"title\":\"Updated Title\",\"description\":\"Updated Description\",\"status\":\"pending\"}";
+
+            TodoDTO updatedDTO = TodoDTO.builder()
+                    .id("1")
+                    .title("Updated Title")
+                    .description("Updated Description")
+                    .status(TodoStatus.PENDING)
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build();
+
+            when(todoService.updateTodo(eq("1"), any(CreateTodoRequest.class))).thenReturn(updatedDTO);
+
+            mockMvc.perform(put("/api/todos/1")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("PENDING"));
         }
     }
 

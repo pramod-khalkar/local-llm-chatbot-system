@@ -5,6 +5,7 @@ import logging
 import os
 import asyncio
 import json
+import time # Added import for time module
 from typing import List, Optional
 
 # Configure logging
@@ -12,7 +13,6 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 # Import orchestrator components
-from app.orchestrator.provider.base import ProviderFactory
 from app.orchestrator.provider.ollama_provider import OllamaProvider
 from app.orchestrator.query_router import QueryRouter
 from app.orchestrator.rag.faiss_handler import FAISSVectorStore
@@ -31,22 +31,28 @@ async def lifespan(app: FastAPI):
     
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     llm_provider = OllamaProvider(
-        model_name="tinyllama",
         host=ollama_host,
-        embedding_model="nomic-embed-text"
+        embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
     )
-    
-    query_router = QueryRouter()
+
+    # Initialize MCPHandler FIRST
+    mcp_handler = MCPHandler(
+        host=os.getenv("MCP_SERVER_HOST", "localhost"),
+        port=int(os.getenv("MCP_SERVER_PORT", 8002))
+    )
+    logger.info(f"lifespan: mcp_handler initialized to = {mcp_handler}")
+    if mcp_handler is None:
+        raise RuntimeError("MCPHandler failed to initialize; it is None.")
+
+    # Then initialize QueryRouter with the now-initialized mcp_handler
+    query_router = QueryRouter(llm_provider=llm_provider, mcp_handler=mcp_handler)
+    await query_router._fetch_tools() # Explicitly fetch tools after initialization
+
     rag_store = FAISSVectorStore(index_path=os.getenv("FAISS_INDEX_PATH", "/data/faiss_index"), dimension=768)
     embeddings_pipeline = EmbeddingsPipeline(
         chunk_size=int(os.getenv("CHUNK_SIZE", 512)),
         chunk_overlap=int(os.getenv("CHUNK_OVERLAP", 50))
     )
-    mcp_handler = MCPHandler(
-        host=os.getenv("MCP_SERVER_HOST", "localhost"),
-        port=int(os.getenv("MCP_SERVER_PORT", 8002))
-    )
-    
     logger.info("✓ Orchestration service initialized")
     yield
     logger.info("Orchestration service shutting down...")
@@ -86,174 +92,248 @@ async def health_check():
 @app.post("/api/orchestrator/chat", response_model=OrchestrationResponse)
 async def orchestrate_chat(query: OrchestrationQuery) -> OrchestrationResponse:
     """Orchestrate chat with routing to RAG and tools."""
+    start_orchestration_time = time.time()
     try:
         logger.info(f"Orchestrating query: {query.query[:100]}...")
-        
+
         # Route query
+        start_routing_time = time.time()
         logger.info("Step 1: Routing query...")
         routing = await query_router.route_query(query.query, query.context)
-        logger.info(f"Step 1 done: query_type={routing.query_type}, tool_name={routing.tool_name}")
-        
-        # Get LLM response
-        logger.info("Step 2: Generating LLM response...")
-        response = await llm_provider.generate(
-            prompt=query.query,
-            context=query.context
-        )
-        logger.info("Step 2 done: LLM response generated")
-        
+        routing_duration = time.time() - start_routing_time
+        logger.info(f"Step 1 done (took {routing_duration:.2f}s): query_type={routing.query_type}, tool_name={routing.tool_name}")
+
+        llm_response = ""
         sources = []
         tool_calls = []
-        llm_response = response.get("response", "")
-        
-        # If RAG required, search documents
+        augmented_prompt = query.query # Initialize augmented_prompt with the original query
+
+        # If RAG required, search documents and augment prompt
         if routing.rag_required and query.use_rag:
-            logger.info(f"Step 3: RAG search triggered for query: {query.query[:50]}...")
+            start_rag_time = time.time()
+            logger.info(f"Step 2: RAG search triggered for query: {query.query[:50]}...")
             try:
                 embedding = await llm_provider.embed_text(query.query)
-                logger.info(f"Step 3a: Embedding generated, dimensions={len(embedding) if embedding else 0}")
-                logger.info(f"Step 3b: Index stats before search: {rag_store.get_stats()}")
+                logger.info(f"Step 2a: Embedding generated, dimensions={len(embedding) if embedding else 0}")
+                logger.info(f"Step 2b: Index stats before search: {rag_store.get_stats()}")
                 results = rag_store.search(embedding, k=5, threshold=0.0)
-                logger.info(f"Step 3c: RAG search returned {len(results)} results")
-                for i, r in enumerate(results):
-                    logger.info(f"Step 3d: Result {i}: score={r.get('score')}, content_len={len(r.get('content', ''))}")
-                sources = [r.get("content", "")[:100] for r in results]
-                logger.info(f"Step 3 done: Found {len(sources)} RAG sources")
+                logger.info(f"Step 2c: RAG search returned {len(results)} results")
+                
+                if results:
+                    full_sources_content = "\n\n".join([r.get("content", "") for r in results])
+                    augmented_prompt = f"Based on the following documents:\n\n{full_sources_content}\n\nAnswer the question: {query.query}"
+                    sources = [r.get("content", "")[:100] for r in results] # Store truncated sources for metadata
+                    logger.info(f"Step 2d: Augmented prompt created with {len(results)} RAG sources.")
+                else:
+                    logger.info("Step 2d: No RAG sources found, proceeding with original query.")
+
+                rag_duration = time.time() - start_rag_time
+                logger.info(f"Step 2 done (took {rag_duration:.2f}s): Found {len(sources)} RAG sources (truncated for metadata)")
             except Exception as e:
-                logger.error(f"Step 3 Error: {str(e)}", exc_info=True)
+                logger.error(f"Step 2 Error: {str(e)}", exc_info=True)
                 sources = []
-        
+                augmented_prompt = query.query # Fallback to original query if RAG fails
+
+        # Get LLM response
+        start_llm_gen_time = time.time()
+        logger.info("Step 3: Generating LLM response...")
+        response = await llm_provider.generate(
+            prompt=augmented_prompt,
+            context=query.context
+        )
+        llm_gen_duration = time.time() - start_llm_gen_time
+        llm_response = response.get("response", "")
+        logger.info(f"Step 3 done (took {llm_gen_duration:.2f}s): LLM response generated")
+
         # If tool required, call appropriate MCP tool
-        if routing.query_type == "tool" and query.use_tools:
-            logger.info(f"Step 4: Tool call triggered for tool: {routing.tool_name}, action: {routing.tool_action}")
+        if routing.query_type == "tool" and query.use_tools and routing.tool_name:
+            start_tool_time = time.time()
+            logger.info(f"Step 4: Tool call triggered for tool: {routing.tool_name}")
+            tool_calls = [routing.tool_name] # Mark tool as called
+
             try:
-                # For todo-related queries, dispatch based on action
-                if routing.tool_name == "todo":
-                    tool_action = routing.tool_action or "list"
-                    logger.info(f"Step 4a: Todo action detected: {tool_action}")
-                    
-                    if tool_action == "create":
-                        # Extract title and description from query using LLM
-                        logger.info("Step 4b: Extracting todo details from query...")
-                        extraction_prompt = f"""Extract the todo task details from this request:
-"{query.query}"
+                # Extract tool name and parameters
+                tool_name = routing.tool_name
+                tool_params = routing.tool_params if routing.tool_params is not None else {}
 
-Return ONLY a JSON object with:
-{{"title": "task title", "description": "optional description"}}
-
-Example: {{"title": "Buy groceries", "description": "milk, eggs, bread"}}"""
-                        
-                        extraction_response = await llm_provider.generate(prompt=extraction_prompt)
-                        try:
-                            extracted = json.loads(extraction_response.get("response", "{}"))
-                            title = extracted.get("title", "New Task")
-                            description = extracted.get("description", "")
-                            logger.info(f"Step 4c: Extracted - title='{title}', description='{description}'")
-                            
-                            tool_result = await asyncio.wait_for(
-                                mcp_handler.create_todo(title, description),
-                                timeout=15.0
-                            )
-                            logger.info(f"Step 4d: create_todo completed with status={tool_result.get('status')}")
-                            tool_calls = ["create_todo"]
-                            
-                            if tool_result.get("status") == "success":
-                                todo_data = tool_result.get("data", {})
-                                todo_id = todo_data.get("id", "")
-                                llm_response = f"✓ Todo created successfully!\n\nTitle: {title}\nID: {todo_id}\nDescription: {description}"
-                                logger.info("Step 4e: Todo created successfully")
-                            else:
-                                error_msg = tool_result.get("message", "Unknown error")
-                                llm_response = f"✗ Failed to create todo: {error_msg}"
-                                logger.warning(f"Step 4e: Todo creation failed: {error_msg}")
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse extraction response as JSON, using defaults")
-                            title = query.query[:50]  # Use first 50 chars as title
-                            tool_result = await asyncio.wait_for(
-                                mcp_handler.create_todo(title, ""),
-                                timeout=15.0
-                            )
-                            tool_calls = ["create_todo"]
-                            if tool_result.get("status") == "success":
-                                llm_response = f"✓ Todo created: {title}"
-                            else:
-                                llm_response = f"✗ Failed to create todo: {tool_result.get('message')}"
-                    
-                    elif tool_action == "complete":
-                        # Extract todo ID/title to complete
-                        logger.info("Step 4b: Extracting todo ID/title for completion...")
-                        extraction_prompt = f"""Extract the todo ID or title from this completion request:
-"{query.query}"
-
-Return ONLY a JSON object with:
-{{"todo_id": "id if mentioned", "todo_title": "title if mentioned"}}
-
-Example: {{"todo_id": "1", "todo_title": ""}}"""
-                        
-                        extraction_response = await llm_provider.generate(prompt=extraction_prompt)
-                        try:
-                            extracted = json.loads(extraction_response.get("response", "{}"))
-                            todo_id = extracted.get("todo_id")
-                            todo_title = extracted.get("todo_title")
-                            
-                            if todo_id:
-                                logger.info(f"Step 4c: Completing todo ID: {todo_id}")
-                                tool_result = await asyncio.wait_for(
-                                    mcp_handler.complete_todo(todo_id),
-                                    timeout=15.0
-                                )
-                                tool_calls = ["complete_todo"]
-                                
-                                if tool_result.get("status") == "success":
-                                    llm_response = f"✓ Todo marked as complete!"
-                                    logger.info("Step 4d: Todo completed successfully")
-                                else:
-                                    llm_response = f"✗ Failed to complete todo: {tool_result.get('message')}"
-                                    logger.warning(f"Step 4d: Failed to complete: {tool_result.get('message')}")
-                            else:
-                                llm_response = "⚠ Could not identify which todo to complete. Please specify the todo ID or title."
-                                logger.warning("Step 4c: Could not extract todo ID/title")
-                        except json.JSONDecodeError:
-                            llm_response = "⚠ Could not parse todo details for completion"
-                            logger.warning("Failed to parse completion extraction")
-                    
-                    else:  # list or default
-                        logger.info("Step 4b: Calling list_todos tool...")
+                tool_result = None
+                if tool_name == "create_todo":
+                    title = tool_params.get("title")
+                    description = tool_params.get("description", "")
+                    if not title:
+                        llm_response = "✗ Missing title for todo creation."
+                        logger.warning("Step 4: create_todo called without a title.")
+                    else:
                         tool_result = await asyncio.wait_for(
-                            mcp_handler.list_todos(),
-                            timeout=15.0
+                            mcp_handler.create_todo(title, description),
+                            timeout=600.0
                         )
-                        logger.info(f"Step 4c: list_todos completed with status={tool_result.get('status')}")
-                        tool_calls = ["list_todos"]
-                        
-                        if tool_result.get("status") == "success":
-                            todos = tool_result.get("todos", [])
-                            if todos:
-                                todo_summary = f"You have {len(todos)} todo(s):\n\n"
-                                for i, todo in enumerate(todos, 1):
-                                    title = todo.get("title", "")
-                                    status = todo.get("status", "")
-                                    todo_id = todo.get("id", "")
-                                    todo_summary += f"{i}. [{status}] {title} (ID: {todo_id})\n"
-                                llm_response = todo_summary
-                            else:
-                                llm_response = "✓ You have no todos! Great job!"
-                            logger.info(f"Step 4d: Todo list generated: {len(todos)} todos")
+                        if tool_result and tool_result.get("status") == "success":
+                            todo_data = tool_result.get("data", {})
+                            todo_id = todo_data.get("id", "")
+                            llm_response = f"✓ Todo created successfully!\n\nTitle: {title}\nID: {todo_id}\nDescription: {description}"
+                            logger.info("Step 4: create_todo completed successfully.")
                         else:
                             error_msg = tool_result.get("message", "Unknown error")
-                            llm_response = f"✗ Failed to list todos: {error_msg}"
-                            logger.warning(f"Step 4d: Failed to list todos: {error_msg}")
-            
+                            llm_response = f"✗ Failed to create todo: {error_msg}"
+                            logger.warning(f"Step 4: create_todo failed: {error_msg}")
+
+                elif tool_name == "list_todos":
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.list_todos(),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        todos = tool_result.get("todos", [])
+                        if todos:
+                            todo_summary = f"You have {len(todos)} todo(s):\n\n"
+                            for i, todo in enumerate(todos, 1):
+                                title = todo.get("title", "")
+                                status = todo.get("status", "")
+                                todo_id = todo.get("id", "")
+                                todo_summary += f"{i}. [{status}] {title} (ID: {todo_id})\n"
+                            llm_response = todo_summary
+                        else:
+                            llm_response = "✓ You have no todos! Great job!"
+                        logger.info("Step 4: list_todos completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to list todos: {error_msg}"
+                        logger.warning(f"Step 4: list_todos failed: {error_msg}")
+
+                elif tool_name == "complete_todo":
+                    todo_id = tool_params.get("id")
+                    current_llm_response = "" # To store temporary messages during ID resolution
+
+                    if not todo_id:
+                        # Attempt to resolve ID from query if not provided
+                        logger.info("Step 4: complete_todo called without explicit ID, attempting resolution.")
+                        search_term = query.query # Use the full query for search
+                        list_result = await asyncio.wait_for(
+                            mcp_handler.list_todos(search=search_term),
+                            timeout=600.0
+                        )
+                        if list_result and list_result.get("status") == "success":
+                            todos = list_result.get("todos", [])
+                            if len(todos) == 1:
+                                todo_id = todos[0].get("id")
+                                logger.info(f"Resolved ID '{todo_id}' for completion from search term '{search_term}'.")
+                            elif len(todos) > 1:
+                                summary = "\n".join([f"- {t.get('title')} (ID: {t.get('id')})" for t in todos])
+                                current_llm_response = f"✗ Multiple todos found for '{search_term}'. Please specify by ID or provide more details:\n{summary}"
+                                logger.warning(f"Step 4: complete_todo failed due to ambiguous ID resolution for search term '{search_term}'.")
+                            else:
+                                current_llm_response = f"✗ No todo found matching '{search_term}' for completion."
+                                logger.warning(f"Step 4: complete_todo failed, no todo found for search term '{search_term}'.")
+                        else:
+                            error_msg = list_result.get("message", "Unknown error during todo lookup")
+                            current_llm_response = f"✗ Failed to search for todos to complete: {error_msg}"
+                            logger.warning(f"Step 4: complete_todo failed during lookup: {error_msg}")
+
+                    if not todo_id: # If ID is still missing after resolution attempt, or resolution resulted in a message
+                        llm_response = current_llm_response if current_llm_response else "✗ Missing todo ID for completion after resolution attempt."
+                        tool_duration = time.time() - start_tool_time
+                        logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' skipped due to ID resolution issue.")
+                        return OrchestrationResponse(
+                            response=llm_response,
+                            query_type=routing.query_type,
+                            sources=sources,
+                            tool_calls=tool_calls,
+                            tokens=response.get("tokens")
+                        )
+
+                    # Proceed with tool call if ID is now resolved
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.complete_todo(todo_id),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        llm_response = f"✓ Todo {todo_id} marked as complete!"
+                        logger.info(f"Step 4: complete_todo for ID {todo_id} completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to complete todo {todo_id}: {error_msg}"
+                        logger.warning(f"Step 4: complete_todo for ID {todo_id} failed: {error_msg}")
+
+                elif tool_name == "update_todo":
+                    todo_id = tool_params.get("id")
+                    current_llm_response = "" # To store temporary messages during ID resolution
+
+                    if not todo_id:
+                        # Attempt to resolve ID from query if not provided
+                        logger.info("Step 4: update_todo called without explicit ID, attempting resolution.")
+                        search_term = query.query # Use the full query for search
+                        list_result = await asyncio.wait_for(
+                            mcp_handler.list_todos(search=search_term),
+                            timeout=600.0
+                        )
+                        if list_result and list_result.get("status") == "success":
+                            todos = list_result.get("todos", [])
+                            if len(todos) == 1:
+                                todo_id = todos[0].get("id")
+                                logger.info(f"Resolved ID '{todo_id}' for update from search term '{search_term}'.")
+                            elif len(todos) > 1:
+                                summary = "\n".join([f"- {t.get('title')} (ID: {t.get('id')})" for t in todos])
+                                current_llm_response = f"✗ Multiple todos found for '{search_term}'. Please specify by ID or provide more details:\n{summary}"
+                                logger.warning(f"Step 4: update_todo failed due to ambiguous ID resolution for search term '{search_term}'.")
+                            else:
+                                current_llm_response = f"✗ No todo found matching '{search_term}' for update."
+                                logger.warning(f"Step 4: update_todo failed, no todo found for search term '{search_term}'.")
+                        else:
+                            error_msg = list_result.get("message", "Unknown error during todo lookup")
+                            current_llm_response = f"✗ Failed to search for todos to update: {error_msg}"
+                            logger.warning(f"Step 4: update_todo failed during lookup: {error_msg}")
+                    
+                    if not todo_id: # If ID is still missing after resolution attempt, or resolution resulted in a message
+                        llm_response = current_llm_response if current_llm_response else "✗ Missing todo ID for update after resolution attempt."
+                        tool_duration = time.time() - start_tool_time
+                        logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' skipped due to ID resolution issue.")
+                        return OrchestrationResponse(
+                            response=llm_response,
+                            query_type=routing.query_type,
+                            sources=sources,
+                            tool_calls=tool_calls,
+                            tokens=response.get("tokens")
+                        )
+
+                    # Proceed with tool call if ID is now resolved
+                    title = tool_params.get("title")
+                    description = tool_params.get("description")
+                    status = tool_params.get("status")
+
+                    tool_result = await asyncio.wait_for(
+                        mcp_handler.update_todo(
+                            todo_id=todo_id,
+                            title=title,
+                            description=description,
+                            status=status
+                        ),
+                        timeout=600.0
+                    )
+                    if tool_result and tool_result.get("status") == "success":
+                        llm_response = f"✓ Todo {todo_id} updated successfully!"
+                        logger.info(f"Step 4: update_todo for ID {todo_id} completed successfully.")
+                    else:
+                        error_msg = tool_result.get("message", "Unknown error")
+                        llm_response = f"✗ Failed to update todo {todo_id}: {error_msg}"
+                        logger.warning(f"Step 4: update_todo for ID {todo_id} failed: {error_msg}")
+                else:
+                    llm_response = f"⚠ Tool '{tool_name}' is not directly supported by this orchestrator for direct invocation."
+                    logger.warning(f"Step 4: Unsupported tool '{tool_name}' invoked.")
+
+                tool_duration = time.time() - start_tool_time
+                logger.info(f"Step 4 done (took {tool_duration:.2f}s): Tool call for '{tool_name}' completed.")
+
             except asyncio.TimeoutError:
-                logger.error("Step 4: Tool call timed out after 15 seconds")
+                logger.error("Step 4: Tool call timed out after 600 seconds")
                 llm_response = "✗ Tool call timed out. Please try again."
             except Exception as e:
-                logger.error(f"Step 4: Error calling MCP tool: {str(e)}", exc_info=True)
-                llm_response = f"✗ Error: {str(e)}"
-        
-        logger.info("Returning orchestration response...")
-        return OrchestrationResponse(
-            response=llm_response,
+                logger.error(f"Step 4: Error calling MCP tool '{tool_name}': {str(e)}", exc_info=True)
+                llm_response = f"✗ Error calling tool '{tool_name}': {str(e)}"
+
+        total_orchestration_duration = time.time() - start_orchestration_time
+        logger.info(f"Returning orchestration response (total duration: {total_orchestration_duration:.2f}s)...")
+        return OrchestrationResponse(            response=llm_response,
             query_type=routing.query_type,
             sources=sources,
             tool_calls=tool_calls,

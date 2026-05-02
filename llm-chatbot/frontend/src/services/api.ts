@@ -7,7 +7,7 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 120000, // 120 seconds for LLM response
+  timeout: 600000, // 600 seconds (10 minutes) for LLM response
 });
 
 export interface ChatMessage {
@@ -97,7 +97,7 @@ export const ragService = {
       query,
       top_k: topK,
       threshold,
-    }, { timeout: 30000 });
+    }, { timeout: 120000 });
     return response.data;
   },
 
@@ -106,14 +106,22 @@ export const ragService = {
     const ragApiUrl = process.env.NEXT_PUBLIC_RAG_API_URL || 'http://localhost:8001/api';
     const response = await axios.post(`${ragApiUrl}/rag/index`, {
       documents,
-    }, { timeout: 60000 });
+    }, { timeout: 300000 });
     return response.data;
   },
 
   // Get RAG stats
   async getStats(): Promise<any> {
     const ragApiUrl = process.env.NEXT_PUBLIC_RAG_API_URL || 'http://localhost:8001/api';
-    const response = await axios.get(`${ragApiUrl}/stats`, { timeout: 10000 });
+    const response = await axios.get(`${ragApiUrl}/stats`, { timeout: 30000 });
+    return response.data;
+  },
+};
+
+export const configService = {
+  // Get application configuration
+  async getConfig(): Promise<{ model_name: string; environment: string; version: string }> {
+    const response = await apiClient.get('/config');
     return response.data;
   },
 };

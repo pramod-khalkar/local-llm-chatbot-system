@@ -1,5 +1,6 @@
 import ollama
 import asyncio
+import os
 from typing import Optional, List, Dict, Any
 from .base import LLMProvider
 import logging
@@ -12,13 +13,14 @@ class OllamaProvider(LLMProvider):
     
     def __init__(
         self,
-        model_name: str = "tinyllama",
+        model_name: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
         temperature: float = 0.7,
         max_tokens: int = 2048,
         host: str = "http://localhost:11434",
         embedding_model: str = "nomic-embed-text"
     ):
         super().__init__(model_name, temperature, max_tokens)
+        logger.info(f"OllamaProvider initialized with model: {self.model_name}")
         self.host = host
         self.embedding_model = embedding_model
         self.client = ollama.Client(host=host)
