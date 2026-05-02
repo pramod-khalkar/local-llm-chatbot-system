@@ -6,13 +6,13 @@ A minimal end-to-end system that hosts a local LLM, leverages RAG for knowledge 
 ![img.png](architecture.png)
 
 # Quick start the all container's
-```
-todoer> docker compose up --build
 
-llm-chatbot> docker compose up --build
+- Start the todo task management service `docker compose up --build`
+- The llm-chatbot service `docker compose up --build`
+- Open the llm-chatbot service in the browser `http://localhost:3000`
 
-```
+![llm-chatbot-screenshot.png](llm-chatbot-screenshot.png)
 
 # More details
-- [todoer readme](./todoer/README.md)
-- [llm-chatbot readme](./llm-chatbot/README.md)
+- [Read more about todo task management service](./todoer/README.md)
+- [Read more about llm-chatbot](./llm-chatbot/README.md)
